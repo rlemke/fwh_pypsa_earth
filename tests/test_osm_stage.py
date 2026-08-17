@@ -150,3 +150,59 @@ def test_the_module_globals_upstream_expects_still_exist():
 def test_version_identifies_the_commit():
     v = upstream.version()
     assert v and v != "unknown" and len(v) == 12
+
+
+# --- build_shapes -----------------------------------------------------------
+
+
+def test_shapes_refuse_to_guess_about_the_sea(tmp_path):
+    """No EEZ file means empty offshore shapes, which is correct for a landlocked
+    country and wrong for a coastal one. That is a judgement about the caller's
+    countries, so it is theirs to make explicitly."""
+    from facetwork.runtime.errors import PermanentError
+
+    with pytest.raises(PermanentError, match="allow_no_eez"):
+        h.handle({
+            "_facet_name": "pypsa.earth.BuildShapes",
+            "countries": ["LU"], "out_dir": str(tmp_path),
+        })
+
+
+def test_shapes_reject_a_missing_eez_path(tmp_path):
+    from facetwork.runtime.errors import PermanentError
+
+    with pytest.raises(PermanentError, match="eez_gpkg does not exist"):
+        h.handle({
+            "_facet_name": "pypsa.earth.BuildShapes",
+            "countries": ["LU"], "out_dir": str(tmp_path),
+            "eez_gpkg": str(tmp_path / "nope.gpkg"),
+        })
+
+
+def test_shapes_need_countries(tmp_path):
+    from facetwork.runtime.errors import PermanentError
+
+    with pytest.raises(PermanentError, match="countries is required"):
+        h.handle({
+            "_facet_name": "pypsa.earth.BuildShapes",
+            "countries": [], "out_dir": str(tmp_path), "allow_no_eez": True,
+        })
+
+
+@needs_upstream
+def test_the_shape_functions_are_still_where_we_call_them():
+    """`gadm_shapes` is deliberately not produced by default — gadm() downloads
+    WorldPop rasters and nothing in the OSM stage reads it."""
+    mod = upstream.load("build_shapes")
+    for fn in ("countries", "eez", "country_cover", "gadm", "save_to_geojson"):
+        assert hasattr(mod, fn), fn
+
+
+@needs_upstream
+def test_country_cover_still_accepts_no_eez():
+    """The no-EEZ path is upstream's own: eez_shapes defaults to None in their
+    signature. If that ever becomes required, allow_no_eez is a lie."""
+    import inspect
+
+    sig = inspect.signature(upstream.load("build_shapes").country_cover)
+    assert sig.parameters["eez_shapes"].default is None

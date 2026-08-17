@@ -74,6 +74,132 @@ def _guard(fn):
 
 
 # ---------------------------------------------------------------------------
+# 0/3  build_shapes — the prerequisite, scoped to what the OSM stage needs
+# ---------------------------------------------------------------------------
+
+
+@_guard
+def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
+    """Upstream's ``build_shapes``, restricted to its three cheap outputs.
+
+    Their rule produces six things from four independent functions. The OSM
+    stage consumes exactly three — ``country_shapes``, ``offshore_shapes`` and
+    ``extended_country_shape`` — and NOT ``gadm_shapes``, which is the expensive
+    one: ``gadm()`` downloads WorldPop population rasters per country. So it is
+    skipped unless ``include_gadm`` asks for it, and that is a scope decision
+    rather than an omission.
+
+    **The EEZ file cannot be automated, and not because of this port.** Upstream's
+    own ``eez()`` reads ``data/eez/eez_v11.gpkg`` and, when it is absent, tells
+    the user to *"download it from marineregions.org and copy it in"* — a
+    form-gated manual download. Given one, offshore shapes are produced normally.
+    Without one this returns EMPTY offshore shapes, which is exactly right for a
+    landlocked country and **wrong for a coastal one**, so it must be asked for
+    explicitly via ``allow_no_eez``.
+
+    ``country_cover``'s ``eez_shapes`` argument is optional in upstream's own
+    signature, so the no-EEZ path is theirs rather than something invented here —
+    but the extended shape then carries no offshore buffer, and `clean_data`
+    filters lines against it.
+    """
+    import geopandas as gpd
+
+    mod = upstream.load("build_shapes")
+    cfg = _config()
+    opts = cfg["build_shape_options"]
+    crs = cfg["crs"]
+    say = _log(params)
+
+    countries_list = params.get("countries") or []
+    if isinstance(countries_list, str):
+        countries_list = [countries_list]
+    if not countries_list:
+        raise PermanentError("countries is required")
+    out_dir = Path(params["out_dir"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    eez_gpkg = (params.get("eez_gpkg") or "").strip()
+    if eez_gpkg and not Path(eez_gpkg).exists():
+        raise PermanentError(f"eez_gpkg does not exist: {eez_gpkg}")
+    if not eez_gpkg and not params.get("allow_no_eez"):
+        raise PermanentError(
+            "no eez_gpkg. Upstream's eez() needs data/eez/eez_v11.gpkg, which even "
+            "upstream does not download for you (marineregions.org, form-gated). "
+            "Pass it, or set allow_no_eez=true — which yields EMPTY offshore "
+            "shapes: correct for a landlocked country, wrong for a coastal one."
+        )
+
+    say(f"build_shapes for {countries_list} (GADM download; gadm_shapes skipped)")
+    country_shapes = mod.countries(
+        countries_list,
+        crs["geo_crs"],
+        opts["contended_flag"],
+        opts["update_file"],
+        opts["out_logging"],
+        tolerance=opts["simplify_tolerance"],
+    )
+    p_country = out_dir / "country_shapes.geojson"
+    country_shapes.to_file(p_country)
+
+    p_offshore = out_dir / "offshore_shapes.geojson"
+    if eez_gpkg:
+        offshore = mod.eez(
+            countries_list,
+            crs["geo_crs"],
+            country_shapes,
+            eez_gpkg,
+            out_logging=opts["out_logging"],
+            tolerance=opts["simplify_tolerance"],
+            minarea=opts["minarea"],
+            simplify_gadm=opts["simplify_gadm"],
+        )
+        offshore.reset_index().to_file(p_offshore)
+        offshore_geom = offshore.geometry
+        offshore_n = len(offshore)
+    else:
+        say("no EEZ: offshore shapes are EMPTY (landlocked assumption)", level="warning")
+        # fiona refuses to write an empty layer, so the empty case is written as
+        # literal GeoJSON rather than left absent — the next rule declares it as
+        # an input and an absent file is a broken DAG, not an empty result.
+        p_offshore.write_text('{"type": "FeatureCollection", "features": []}')
+        offshore_geom = None
+        offshore_n = 0
+
+    extended = gpd.GeoDataFrame(
+        geometry=[mod.country_cover(country_shapes, offshore_geom)],
+        crs=country_shapes.crs,
+    )
+    p_extended = out_dir / "extended_country_shape.geojson"
+    extended.reset_index().to_file(p_extended)
+
+    gadm_path = ""
+    if params.get("include_gadm"):
+        say("gadm(): downloading WorldPop rasters — this is the expensive path")
+        gadm_shapes = mod.gadm(
+            opts["worldpop_method"], opts["gdp_method"], countries_list,
+            crs["geo_crs"], opts["contended_flag"], int(params.get("mem_mb", 3000)),
+            opts["gadm_layer_id"], opts["update_file"], opts["out_logging"],
+            opts["year"], nprocesses=opts["nprocesses"],
+            simplify_gadm=opts["simplify_gadm"], tolerance=opts["simplify_tolerance"],
+            minarea=opts["minarea"],
+        )
+        gadm_path = str(out_dir / "gadm_shapes.geojson")
+        mod.save_to_geojson(gadm_shapes, gadm_path)
+
+    say(f"country_shapes={len(country_shapes)} offshore={offshore_n}")
+    return {
+        "out_dir": str(out_dir),
+        "country_shapes": str(p_country),
+        "offshore_shapes": str(p_offshore),
+        "extended_country_shape": str(p_extended),
+        "gadm_shapes": gadm_path,
+        "country_count": len(country_shapes),
+        "offshore_count": offshore_n,
+        "upstream_commit": upstream.version(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 1/3  download_osm_data
 # ---------------------------------------------------------------------------
 
@@ -462,6 +588,7 @@ def _row_count(path: str) -> int:
 
 
 _DISPATCH = {
+    f"{NAMESPACE}.BuildShapes": handle_build_shapes,
     f"{NAMESPACE}.DownloadOsmData": handle_download_osm_data,
     f"{NAMESPACE}.MergeRawOsm": handle_merge_raw_osm,
     f"{NAMESPACE}.CleanOsmData": handle_clean_osm_data,

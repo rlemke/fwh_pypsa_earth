@@ -106,10 +106,37 @@ concatenation (features carry their own `Region`), and empty inputs stay
 zero-byte outputs, because `clean_osm_data` checks `getsize() > 0` — a missing
 file breaks it, an empty one is the documented "nothing here".
 
-## Prerequisites that are not optional
+## build_shapes — ported, and blocked on a network
 
-`build_shapes` is out of scope but not out of the way. Two of its outputs are
-**required**, and neither is interchangeable:
+`BuildShapes` ports upstream's rule, **restricted to the three outputs the OSM
+stage consumes**: `country_shapes`, `offshore_shapes`, `extended_country_shape`.
+Their rule makes six things from four independent functions; `gadm_shapes` is
+skipped unless `include_gadm`, because `gadm()` downloads WorldPop population
+rasters per country and nothing downstream of here reads it.
+
+Two dependencies are worth knowing before planning a parity run:
+
+- **The EEZ file cannot be automated, and not because of this port.** Upstream's
+  own `eez()` reads `data/eez/eez_v11.gpkg` and, when it is missing, tells you to
+  *"download it from marineregions.org and copy it in"* — a form-gated manual
+  download. Given one, offshore shapes are produced normally. Without one,
+  `allow_no_eez` yields **empty** offshore shapes: right for a landlocked
+  country, wrong for a coastal one, so it must be asked for explicitly.
+  (`country_cover`'s `eez_shapes` argument is optional in upstream's signature,
+  so the no-EEZ path is theirs, not invented here — but the extended shape then
+  carries no offshore buffer, and `clean_data` filters lines against it.)
+- **GADM is unreachable from this network.** `countries()` fetches
+  `https://geodata.ucdavis.edu/gadm/gadm4.1/gpkg/gadm41_LUX.gpkg`; the host
+  answers ICMP (128.120.146.30) but **port 443 times out**, the same way
+  Geofabrik is blocked for this fleet. So the facet is written, its imports
+  resolve and its refusals are tested, but `countries()` has **not** been run to
+  completion here. That is a network fact, not a code one, and it is why a
+  country-attributed parity run is still outstanding.
+
+### Prerequisites that are not optional
+
+`build_shapes` outputs are required by the OSM stage, and neither is
+interchangeable:
 
 - **`extended_country_shape`** — `clean_data` filters lines by
   `geometry.boundary.within(extended_country_shape)` (`clean_osm_data.py:992`),
@@ -142,9 +169,20 @@ fw ffl run src/pypsa_earth_ffl/ffl/pypsa_earth.ffl \
              "country_shapes":"/abs/shapes/country_shapes.geojson"}'
 ```
 
-Upstream's scripts import `_helpers`, which imports `pypsa` — so a runner needs
-**pypsa + 27 deps (110 MiB)**, plus `country_converter`, `reverse_geocode`,
-`CurrencyConverter`, `fake_useragent` and `scikit-learn` (~12 MiB more). A host
+Upstream's scripts import `_helpers`, which imports `pypsa` — and the chain does
+not stop there. Running this stage pulled, in order of discovery:
+
+| for | packages | size |
+|---|---|---|
+| `_helpers` | pypsa + 27 deps | 110.7 MiB |
+| `_helpers` | country_converter, reverse_geocode, CurrencyConverter, fake_useragent | 4.2 MiB |
+| `build_osm_network` | scikit-learn | 7.9 MiB |
+| `build_shapes` | fiona | 14.1 MiB |
+| `build_shapes` | numba + llvmlite | 41.2 MiB |
+
+**~178 MiB to run three rules of sixty**, most of it for code these rules never
+execute — importing their script imports the whole model's dependency tree. A
+delegation would have paid the same, since it needs their environment too. A host
 without the checkout raises `PermanentError`, so the task dead-letters instead of
 retrying against a machine that will never have it.
 

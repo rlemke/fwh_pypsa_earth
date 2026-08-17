@@ -26,6 +26,35 @@
   */
 namespace pypsa.earth {
 
+    /** Upstream's `build_shapes`, restricted to the three outputs the OSM stage
+      * consumes: country / offshore / extended-country shapes.
+      *
+      * Their rule makes six things from four functions; `gadm_shapes` is skipped
+      * unless `include_gadm`, because `gadm()` downloads WorldPop population
+      * rasters per country and nothing downstream of here reads it.
+      *
+      * ⚠️ `eez_gpkg` cannot be automated, and not because of this port: upstream's
+      * own `eez()` tells you to fetch `eez_v11.gpkg` by hand from
+      * marineregions.org. Given one, offshore shapes are produced normally.
+      * Without one, `allow_no_eez` yields EMPTY offshore shapes — right for a
+      * landlocked country, WRONG for a coastal one, hence explicit. */
+    event facet BuildShapes(
+        countries: Json,
+        out_dir: String,
+        eez_gpkg: String = "",
+        allow_no_eez: Boolean = false,
+        include_gadm: Boolean = false
+    ) => (
+        out_dir: String,
+        country_shapes: String,
+        offshore_shapes: String,
+        extended_country_shape: String,
+        gadm_shapes: String,
+        country_count: Int,
+        offshore_count: Int,
+        upstream_commit: String
+    ) with Effect(kind = "external") with Cost(tier = "expensive")
+
     /** Raw OSM power features for a set of countries, via earth_osm.
       *
       * `countries` are ISO-2 codes ("NG", "BJ"); upstream's own
@@ -179,4 +208,66 @@ namespace pypsa.earth {
             // last country's directory and the merge would silently see one.
             yield DownloadEach(raw_dirs += one.out_dir)
         }
+
+    /** The stage with NOTHING supplied from outside — shapes included.
+      *
+      * `BuildOsmGrid` takes the shapes as paths, because a caller often already
+      * has upstream's `build_shapes` output. This one produces them first, so
+      * the whole OSM stage is self-contained.
+      *
+      * ⚠️ Needs GADM (geodata.ucdavis.edu) reachable, which it is not from every
+      * network — see the README. */
+    workflow BuildOsmGridFromScratch(
+        countries: Json,
+        work_dir: String,
+        eez_gpkg: String = "",
+        allow_no_eez: Boolean = false,
+        concurrency: Int = 2
+    ) => (
+        buses: String,
+        lines: String,
+        counts: Json,
+        upstream_commit: String
+    ) andThen {
+        shapes = BuildShapes(
+            countries = $.countries,
+            out_dir = $.work_dir ++ "/shapes",
+            eez_gpkg = $.eez_gpkg,
+            allow_no_eez = $.allow_no_eez
+        )
+
+        downloaded = DownloadEach(
+            countries = $.countries,
+            work_dir = $.work_dir,
+            concurrency = $.concurrency,
+            mp = false
+        )
+
+        merged = MergeRawOsm(
+            raw_dirs = downloaded.raw_dirs,
+            out_dir = $.work_dir ++ "/osm/raw"
+        )
+
+        cleaned = CleanOsmData(
+            raw_dir = merged.out_dir,
+            out_dir = $.work_dir ++ "/osm/clean",
+            extended_country_shape = shapes.extended_country_shape,
+            country_shapes = shapes.country_shapes,
+            offshore_shapes = shapes.offshore_shapes
+        )
+
+        network = BuildOsmNetwork(
+            clean_dir = cleaned.out_dir,
+            out_dir = $.work_dir ++ "/base_network",
+            countries = $.countries,
+            country_shapes = shapes.country_shapes
+        )
+
+        yield BuildOsmGridFromScratch(
+            buses = network.buses,
+            lines = network.lines,
+            counts = network.counts,
+            upstream_commit = network.upstream_commit
+        )
+    }
 }
