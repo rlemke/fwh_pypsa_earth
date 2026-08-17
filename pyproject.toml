@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fwh-pypsa-earth"
+version = "0.1.0"
+description = "PyPSA-Earth's OSM stage as an FFL workflow — the Facetwork port"
+requires-python = ">=3.11"
+dependencies = [
+    "facetwork>=0.31.0",
+    "earth-osm>=3.0.0",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]
+dev = ["pytest>=8.0"]
+
+[project.entry-points."facetwork.domains"]
+pypsa-earth = "pypsa_earth_ffl:domain"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pypsa_earth_ffl = ["ffl/*.ffl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

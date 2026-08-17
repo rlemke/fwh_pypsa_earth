@@ -1,0 +1,182 @@
+/** PyPSA-Earth's OSM stage, in FFL.
+  *
+  * The port of `download_osm_data` -> `clean_osm_data` -> `build_osm_network`
+  * from https://github.com/pypsa-meets-earth/pypsa-earth: raw OpenStreetMap
+  * power infrastructure to a grid topology of buses, lines, converters and
+  * transformers.
+  *
+  * SCOPE. PyPSA-Earth is ~60 rules in a 2,417-line Snakefile — sector coupling,
+  * industry demand, renewable profiles, solving. Most of it is not OSM and needs
+  * ERA5 cutouts and an LP solver. These are the three rules that ARE OSM. It
+  * stops before `base_network`, which assembles a PyPSA `.nc`.
+  *
+  * WHAT THIS PORT IS NOT. `fwh_pypsa_data` collapsed 73 retrieve rules into one
+  * `foreach`, because they were 73 near-copies of one shape over a table. These
+  * three are three distinct algorithms — 2,168 lines of upstream Python — so
+  * this is roughly one facet per rule and there is NO collapse ratio to report.
+  * The handlers call upstream's own `clean_data` and `built_network`, so the
+  * payload stays theirs.
+  *
+  * WHAT FFL ADDS, then, is not brevity:
+  *   - the download fans out per country across a fleet, where Snakemake fans
+  *     out across one machine's cores;
+  *   - each stage is a durable step that survives losing the machine that
+  *     started it, and can be retried or resumed without redoing the others;
+  *   - the source can be a local planet instead of a rate-limited mirror.
+  */
+namespace pypsa.earth {
+
+    /** Raw OSM power features for a set of countries, via earth_osm.
+      *
+      * `countries` are ISO-2 codes ("NG", "BJ"); upstream's own
+      * `country_list_to_geofk` maps them to earth_osm regions. Writes the four
+      * `all_raw_*` files the next rule declares as inputs — including EMPTY ones
+      * where OSM has nothing, because their absence is a broken DAG rather than
+      * an empty result.
+      *
+      * `mp` (earth_osm multiprocessing) defaults FALSE: it forks, and forking a
+      * runner holding logging/Mongo locks in other threads deadlocks the
+      * children. */
+    event facet DownloadOsmData(
+        countries: Json,
+        out_dir: String,
+        data_dir: String = "",
+        mp: Boolean = false
+    ) => (
+        out_dir: String,
+        cables: String,
+        generators: String,
+        lines: String,
+        substations: String,
+        empty_files: Json,
+        upstream_commit: String
+    ) with Effect(kind = "external") with Cost(tier = "expensive")
+
+    /** Concatenate per-country raw files into the one set `clean_osm_data` reads.
+      *
+      * Upstream never needs this: it hands earth_osm the whole country list at
+      * once and gets one aggregated file back. Fanning the download out per
+      * country — the point of a fleet — moves the aggregation here, so this
+      * facet IS the cost of the fan-out rather than a hidden one. */
+    event facet MergeRawOsm(
+        raw_dirs: Json,
+        out_dir: String
+    ) => (
+        out_dir: String,
+        counts: Json,
+        source_dirs: Int
+    ) with Effect(kind = "io") with Cost(tier = "cheap")
+
+    /** Upstream's `clean_data`: voltage parsing, de-duplication, line endings.
+      *
+      * `names_by_shapes` follows UPSTREAM'S DEFAULT (true) and needs the
+      * `build_shapes` outputs. Setting it false does not simply reduce
+      * attribution: every bus then carries `country=NULL`, which breaks the
+      * per-country logic in the next rule. Verified the hard way — see README. */
+    event facet CleanOsmData(
+        raw_dir: String,
+        out_dir: String,
+        extended_country_shape: String,
+        names_by_shapes: Boolean = true,
+        country_shapes: String = "",
+        offshore_shapes: String = "",
+        threshold_voltage: Double = 0.0
+    ) => (
+        out_dir: String,
+        generators: String,
+        lines: String,
+        substations: String,
+        counts: Json,
+        upstream_commit: String
+    ) with Effect(kind = "io") with Cost(tier = "moderate")
+
+    /** Upstream's `built_network`: the grid topology — station merging,
+      * overpassing-line splitting, bus assembly. */
+    event facet BuildOsmNetwork(
+        clean_dir: String,
+        out_dir: String,
+        country_shapes: String,
+        countries: Json = [],
+        force_ac: Boolean = false
+    ) => (
+        out_dir: String,
+        buses: String,
+        lines: String,
+        converters: String,
+        transformers: String,
+        counts: Json,
+        upstream_commit: String
+    ) with Effect(kind = "io") with Cost(tier = "moderate")
+
+    /** The stage end to end, with the download fanned out per country.
+      *
+      * This is the shape Snakemake cannot express the same way. Upstream calls
+      * earth_osm once with the whole country list, so the download is one job on
+      * one machine; here each country is its own durable step, claimed by
+      * whichever runner is free, retried on its own, and surviving the loss of
+      * the machine that started it.
+      *
+      * `limit` bounds how many countries download at once — the contended
+      * resource is the extract mirror and this host's disk, not CPU. */
+    workflow BuildOsmGrid(
+        countries: Json,
+        work_dir: String,
+        extended_country_shape: String,
+        country_shapes: String,
+        concurrency: Int = 2,
+        mp: Boolean = false
+    ) => (
+        buses: String,
+        lines: String,
+        counts: Json,
+        upstream_commit: String
+    ) andThen {
+        downloaded = DownloadEach(
+            countries = $.countries,
+            work_dir = $.work_dir,
+            concurrency = $.concurrency,
+            mp = $.mp
+        )
+
+        merged = MergeRawOsm(
+            raw_dirs = downloaded.raw_dirs,
+            out_dir = $.work_dir ++ "/osm/raw"
+        )
+
+        // Both shapes come from upstream's `build_shapes`, which is outside this
+        // port's scope. They are REQUIRED and not interchangeable: the first
+        // filters which lines survive, the second decides which countries get an
+        // invented bus.
+        cleaned = CleanOsmData(
+            raw_dir = merged.out_dir,
+            out_dir = $.work_dir ++ "/osm/clean",
+            extended_country_shape = $.extended_country_shape
+        )
+
+        network = BuildOsmNetwork(
+            clean_dir = cleaned.out_dir,
+            out_dir = $.work_dir ++ "/base_network",
+            countries = $.countries,
+            country_shapes = $.country_shapes
+        )
+
+        yield BuildOsmGrid(
+            buses = network.buses,
+            lines = network.lines,
+            counts = network.counts,
+            upstream_commit = network.upstream_commit
+        )
+    }
+
+    facet DownloadEach(countries: Json, work_dir: String, concurrency: Int, mp: Boolean) => (raw_dirs: Json)
+        andThen foreach c in $.countries limit $.concurrency {
+            one = DownloadOsmData(
+                countries = $.c,
+                out_dir = $.work_dir ++ "/osm/per-country/" ++ $.c,
+                mp = $.mp
+            )
+            // `+=` AGGREGATES across iterations; a bare `=` would keep only the
+            // last country's directory and the merge would silently see one.
+            yield DownloadEach(raw_dirs += one.out_dir)
+        }
+}
