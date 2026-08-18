@@ -206,3 +206,55 @@ def test_country_cover_still_accepts_no_eez():
 
     sig = inspect.signature(upstream.load("build_shapes").country_cover)
     assert sig.parameters["eez_shapes"].default is None
+
+
+# --- the local-planet workaround for an unreachable GADM --------------------
+
+
+def test_shape_source_is_validated(tmp_path):
+    from facetwork.runtime.errors import PermanentError
+
+    with pytest.raises(PermanentError, match="shape_source must be"):
+        h.handle({"_facet_name": "pypsa.earth.BuildShapes", "countries": ["LU"],
+                  "out_dir": str(tmp_path), "allow_no_eez": True, "shape_source": "naturalearth"})
+
+
+def test_osm_shape_source_needs_a_local_pbf(tmp_path):
+    from facetwork.runtime.errors import PermanentError
+
+    with pytest.raises(PermanentError, match="needs local_pbf"):
+        h.handle({"_facet_name": "pypsa.earth.BuildShapes", "countries": ["LU"],
+                  "out_dir": str(tmp_path), "allow_no_eez": True, "shape_source": "osm"})
+
+
+def test_local_shapes_iso2_extraction():
+    """OSM is inconsistent about where the ISO-2 code lives, and a 3-letter or
+    numeric value in ISO3166-1 must not be mistaken for one."""
+    from pypsa_earth_ffl.tools._pypsa_earth_tools import local_shapes as ls
+
+    assert ls._iso2({"ISO3166-1:alpha2": "lu"}) == "LU"
+    assert ls._iso2({"ISO3166-1": "MT"}) == "MT"
+    assert ls._iso2({"iso3166-1": "de"}) == "DE"
+    assert ls._iso2({"ISO3166-1": "LUX"}) == "", "alpha-3 is not an ISO-2 code"
+    assert ls._iso2({"ISO3166-1": "442"}) == "", "numeric is not an ISO-2 code"
+    assert ls._iso2({"name": "Luxembourg"}) == ""
+
+
+def test_local_shapes_refuse_a_missing_pbf(tmp_path):
+    from pypsa_earth_ffl.tools._pypsa_earth_tools.local_shapes import (
+        LocalShapesError, country_shapes_from_osm,
+    )
+
+    with pytest.raises(LocalShapesError, match="no such PBF"):
+        country_shapes_from_osm(str(tmp_path / "nope.pbf"), ["LU"], str(tmp_path / "o.geojson"))
+
+
+def test_local_shapes_refuse_no_countries(tmp_path):
+    from pypsa_earth_ffl.tools._pypsa_earth_tools.local_shapes import (
+        LocalShapesError, country_shapes_from_osm,
+    )
+
+    pbf = tmp_path / "x.osm.pbf"
+    pbf.write_bytes(b"")
+    with pytest.raises(LocalShapesError, match="no countries requested"):
+        country_shapes_from_osm(str(pbf), [], str(tmp_path / "o.geojson"))

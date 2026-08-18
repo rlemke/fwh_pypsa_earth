@@ -129,6 +129,66 @@ def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
             "shapes: correct for a landlocked country, wrong for a coastal one."
         )
 
+    # WORKAROUND for an unreachable GADM. Upstream's countries() fetches
+    # geodata.ucdavis.edu, which some networks (this fleet included) cannot
+    # reach at all. OSM already carries national boundaries, and a planet or
+    # continent extract on local disk answers the same question offline.
+    #
+    # It is a substitution of PROVENANCE, not an equivalent — GADM and OSM
+    # disagree about disputed territory and coastline generalisation, and
+    # upstream's contended_flag policy is not reproduced — so it is opt-in and
+    # the choice is reported in the result.
+    source = (params.get("shape_source") or "gadm").lower()
+    if source not in ("gadm", "osm"):
+        raise PermanentError(f"shape_source must be 'gadm' or 'osm', got {source!r}")
+    if source == "osm":
+        from ..tools._pypsa_earth_tools.local_shapes import (
+            LocalShapesError,
+            country_shapes_from_osm,
+        )
+
+        pbf = (params.get("local_pbf") or "").strip()
+        if not pbf:
+            raise PermanentError("shape_source='osm' needs local_pbf: a PBF that CONTAINS "
+                                 "the requested countries")
+        p_country = out_dir / "country_shapes.geojson"
+        try:
+            got = country_shapes_from_osm(pbf, countries_list, str(p_country))
+        except LocalShapesError as exc:
+            raise PermanentError(str(exc)) from exc
+        if got["missing"]:
+            # Not a warning to be skimmed past: build_osm_network invents a bus
+            # for any country it cannot find, so a silently missing shape becomes
+            # a fabricated node rather than an error.
+            raise PermanentError(
+                f"no boundary assembled for {got['missing']} from {pbf}. osmium export "
+                "drops relations it cannot close, which happens when a country's "
+                "boundary crosses the extract's clip edge — use an extract that "
+                "CONTAINS those countries (the planet, or their own extract)."
+            )
+        say(f"country shapes from OSM admin_level=2: {got['countries']} (NOT GADM)",
+            level="warning")
+        country_shapes = gpd.read_file(p_country).set_index("name")["geometry"]
+        offshore_geom, offshore_n = None, 0
+        p_offshore = out_dir / "offshore_shapes.geojson"
+        p_offshore.write_text('{"type": "FeatureCollection", "features": []}')
+        extended = gpd.GeoDataFrame(
+            geometry=[mod.country_cover(country_shapes, None)], crs=country_shapes.crs
+        )
+        p_extended = out_dir / "extended_country_shape.geojson"
+        extended.reset_index().to_file(p_extended)
+        return {
+            "out_dir": str(out_dir),
+            "country_shapes": str(p_country),
+            "offshore_shapes": str(p_offshore),
+            "extended_country_shape": str(p_extended),
+            "gadm_shapes": "",
+            "country_count": len(got["countries"]),
+            "offshore_count": 0,
+            "shape_source": "osm-admin-level-2",
+            "upstream_commit": upstream.version(),
+        }
+
     say(f"build_shapes for {countries_list} (GADM download; gadm_shapes skipped)")
     country_shapes = mod.countries(
         countries_list,
@@ -195,6 +255,7 @@ def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
         "gadm_shapes": gadm_path,
         "country_count": len(country_shapes),
         "offshore_count": offshore_n,
+        "shape_source": "gadm",
         "upstream_commit": upstream.version(),
     }
 

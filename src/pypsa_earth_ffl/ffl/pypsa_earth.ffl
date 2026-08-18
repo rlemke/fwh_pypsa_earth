@@ -37,13 +37,30 @@ namespace pypsa.earth {
       * own `eez()` tells you to fetch `eez_v11.gpkg` by hand from
       * marineregions.org. Given one, offshore shapes are produced normally.
       * Without one, `allow_no_eez` yields EMPTY offshore shapes — right for a
-      * landlocked country, WRONG for a coastal one, hence explicit. */
+      * landlocked country, WRONG for a coastal one, hence explicit.
+      *
+      * ⚠️ `shape_source = "osm"` is the WORKAROUND for an unreachable GADM: it
+      * takes national boundaries from a LOCAL extract (`local_pbf`) instead —
+      * `boundary=administrative` + `admin_level=2`, keyed by ISO3166-1. That is
+      * a substitution of PROVENANCE, not an equivalent: GADM and OSM disagree
+      * about disputed territory and coastlines, and upstream's contended_flag
+      * policy is not reproduced. The choice comes back in `shape_source`, so a
+      * result can be labelled with where its geometry came from.
+      *
+      * The extract must CONTAIN each country: `osmium export` silently drops a
+      * boundary relation it cannot close, which is what happens when a country
+      * crosses the extract's clip edge. Measured on the central-america extract,
+      * 5 of 9 assembled — the islands did, the mainland did not. A country whose
+      * shape is missing would otherwise become an INVENTED BUS downstream, so
+      * this refuses rather than warns. */
     event facet BuildShapes(
         countries: Json,
         out_dir: String,
         eez_gpkg: String = "",
         allow_no_eez: Boolean = false,
-        include_gadm: Boolean = false
+        include_gadm: Boolean = false,
+        shape_source: String = "gadm",
+        local_pbf: String = ""
     ) => (
         out_dir: String,
         country_shapes: String,
@@ -52,6 +69,7 @@ namespace pypsa.earth {
         gadm_shapes: String,
         country_count: Int,
         offshore_count: Int,
+        shape_source: String,
         upstream_commit: String
     ) with Effect(kind = "external") with Cost(tier = "expensive")
 

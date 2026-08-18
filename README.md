@@ -133,6 +133,51 @@ Two dependencies are worth knowing before planning a parity run:
   completion here. That is a network fact, not a code one, and it is why a
   country-attributed parity run is still outstanding.
 
+### The local-planet workaround for an unreachable GADM
+
+`shape_source="osm"` takes national boundaries from a **local extract** instead
+of GADM: `boundary=administrative` + `admin_level=2`, keyed by `ISO3166-1`. It
+needs `local_pbf` and nothing else — no network at all.
+
+**It is a substitution of provenance, not an equivalent.** GADM and OSM disagree
+about disputed territory and coastline generalisation, and upstream's
+`contended_flag` policy is not reproduced. The choice is returned in
+`shape_source`, so a result can be labelled with where its geometry came from,
+and it is never presented as a GADM shape.
+
+**The extract must CONTAIN each country.** `osmium export` silently drops a
+boundary relation it cannot close, which is what happens when a country crosses
+the extract's clip edge. Measured on the central-america extract asking for nine
+countries: **5 assembled, 4 did not** — the island states (CU, JM, HT, DO, CR)
+came out, the mainland ones whose borders run off the edge (MX, GT, BZ, PA) did
+not. A missing shape would become an *invented bus* downstream rather than an
+error, so this **refuses** rather than warning, and names what was missing.
+
+#### The attributed run this unblocked
+
+With shapes from the local planet and `names_by_shapes=true` — no GADM, no
+network:
+
+```
+BuildShapes    osm-admin-level-2, 1 country, 31.1s
+CleanOsmData   generators 20, lines 535, substations 1069
+BuildOsmNetwork buses 37, lines 44, transformers 11, converters 0
+```
+
+and, the point of the exercise, **all 37 buses carry `country=LU`** with no
+invented nodes and contiguous ids — where the earlier unattributed run produced
+37 buses of `country=NULL`.
+
+The counts differ slightly from that earlier run (lines 525→535, substations
+1050→1069) and the reason is instructive: `extended_country_shape` is now
+`country_cover(...)`, which **buffers by 0.02°**, rather than the raw boundary
+polygon I passed by hand. More features fall inside the filter. This run follows
+upstream's own composition and the earlier one did not.
+
+Still not parity with a PyPSA-Earth run: the geometry is OSM's, not GADM's.
+What is now demonstrated is that the stage runs **correctly and attributed, on
+local data alone**.
+
 ### Prerequisites that are not optional
 
 `build_shapes` outputs are required by the OSM stage, and neither is
