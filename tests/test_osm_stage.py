@@ -258,3 +258,86 @@ def test_local_shapes_refuse_no_countries(tmp_path):
     pbf.write_bytes(b"")
     with pytest.raises(LocalShapesError, match="no countries requested"):
         country_shapes_from_osm(str(pbf), [], str(tmp_path / "o.geojson"))
+
+
+# --- upstream must win over a same-named file nearer sys.path ---------------
+
+
+@needs_upstream
+def test_a_stray_helpers_does_not_shadow_the_checkout(tmp_path, monkeypatch):
+    """A stale `_helpers.py` in the working directory silently replaced the
+    checkout's, and the symptom was a missing-dependency error naming a package
+    the real file does not import. sys.path[0] is the running script's directory
+    and beats anything appended, so upstream modules are loaded by PATH."""
+    import sys
+
+    stray = tmp_path / "_helpers.py"
+    stray.write_text("raise ImportError('stale copy that must never be loaded')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop("_helpers", None)
+    upstream._prepare_path.cache_clear()
+
+    mod = upstream.load("download_osm_data")
+    assert hasattr(mod, "country_list_to_geofk")
+    loaded = sys.modules["_helpers"].__file__
+    assert str(upstream.repo_dir()) in loaded, f"_helpers came from {loaded}"
+
+
+@needs_upstream
+def test_scripts_are_loaded_from_the_checkout_path():
+    mod = upstream.load("clean_osm_data")
+    assert str(upstream.repo_dir()) in (mod.__file__ or "")
+
+
+def test_a_nonexistent_script_is_named(monkeypatch, tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    monkeypatch.setenv("FW_PYPSA_EARTH_DIR", str(tmp_path))
+    upstream._prepare_path.cache_clear()
+    with pytest.raises(upstream.UpstreamMissing, match="no such upstream script"):
+        upstream.load("not_a_script")
+    upstream._prepare_path.cache_clear()
+
+
+# --- serving earth_osm from local extracts ---------------------------------
+
+
+def test_local_extract_path_comes_from_earth_osms_own_table():
+    """The mapping is not invented here: earth_osm's region record gives the
+    Geofabrik URL, whose path is the layout a planet split already writes."""
+    from pypsa_earth_ffl.tools._pypsa_earth_tools.local_extracts import geofabrik_relpath
+
+    rel, fname = geofabrik_relpath("LU")
+    assert rel == "europe/luxembourg-latest.osm.pbf"
+    assert fname == "luxembourg-latest.osm.pbf"
+
+
+def test_prefill_links_and_writes_a_verifiable_md5(tmp_path):
+    """earth_osm reuses an existing PBF but still verifies it, so the checksum
+    has to be there and has to match, or it silently re-downloads."""
+    import hashlib
+
+    from pypsa_earth_ffl.tools._pypsa_earth_tools.local_extracts import prefill
+
+    root = tmp_path / "roots" / "europe"
+    root.mkdir(parents=True)
+    src = root / "luxembourg-latest.osm.pbf"
+    src.write_bytes(b"not really a pbf, but bytes are bytes")
+
+    data_dir = tmp_path / "data"
+    report = prefill(["LU"], str(data_dir), [str(tmp_path / "roots")])
+    assert report["served"] == ["LU"] and report["absent"] == []
+
+    placed = data_dir / "pbf" / "luxembourg-latest.osm.pbf"
+    assert placed.exists()
+    assert placed.stat().st_ino == src.stat().st_ino, "should hard-link, not copy"
+    md5_line = (data_dir / "pbf" / "luxembourg-latest.osm.pbf.md5").read_text()
+    assert md5_line.split()[0] == hashlib.md5(src.read_bytes()).hexdigest()
+    assert md5_line.split()[1] == "luxembourg-latest.osm.pbf"
+
+
+def test_prefill_reports_what_it_could_not_serve(tmp_path):
+    from pypsa_earth_ffl.tools._pypsa_earth_tools.local_extracts import prefill
+
+    report = prefill(["LU", "MT"], str(tmp_path / "data"), [str(tmp_path / "empty")])
+    assert report["served"] == [] and report["absent"] == ["LU", "MT"]

@@ -298,6 +298,25 @@ def handle_download_osm_data(params: dict[str, Any]) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    # Serve earth_osm from the local planet split rather than Geofabrik. Placing
+    # the PBF and a matching .md5 where it looks makes its download step a no-op
+    # while leaving its verification intact — see local_extracts.
+    roots = [
+        r for r in (params.get("local_extracts")
+                    or os.environ.get("FW_OSM_LOCAL_EXTRACTS", "")).split(":")
+        if r.strip()
+    ]
+    local_report: dict[str, Any] = {"served": [], "absent": list(countries)}
+    if roots:
+        from ..tools._pypsa_earth_tools.local_extracts import prefill
+
+        local_report = prefill(countries, str(data_dir), roots)
+        if local_report["served"]:
+            say(f"served from local extracts (no Geofabrik): {local_report['served']}")
+        if local_report["absent"]:
+            say(f"not found locally, will be downloaded: {local_report['absent']}",
+                level="warning")
+
     eo.save_osm_data(
         primary_name="power",
         region_list=country_list,
@@ -334,6 +353,8 @@ def handle_download_osm_data(params: dict[str, Any]) -> dict[str, Any]:
         "lines": produced["lines_geojson"],
         "substations": produced["substations_geojson"],
         "empty_files": empties,
+        "served_locally": local_report["served"],
+        "downloaded": local_report["absent"],
         "upstream_commit": upstream.version(),
     }
 

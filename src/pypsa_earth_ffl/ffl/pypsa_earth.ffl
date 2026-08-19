@@ -81,6 +81,12 @@ namespace pypsa.earth {
       * where OSM has nothing, because their absence is a broken DAG rather than
       * an empty result.
       *
+      * `local_extracts` (or `FW_OSM_LOCAL_EXTRACTS`) points at a local planet
+      * split. Its extracts are placed where earth_osm looks, with a checksum,
+      * so the Geofabrik download becomes a no-op and its verification still
+      * runs. `served_locally` / `downloaded` report which countries took which
+      * path — a self-hosted extract is only as fresh as the last split.
+      *
       * `mp` (earth_osm multiprocessing) defaults FALSE: it forks, and forking a
       * runner holding logging/Mongo locks in other threads deadlocks the
       * children. */
@@ -88,6 +94,7 @@ namespace pypsa.earth {
         countries: Json,
         out_dir: String,
         data_dir: String = "",
+        local_extracts: String = "",
         mp: Boolean = false
     ) => (
         out_dir: String,
@@ -96,6 +103,8 @@ namespace pypsa.earth {
         lines: String,
         substations: String,
         empty_files: Json,
+        served_locally: Json,
+        downloaded: Json,
         upstream_commit: String
     ) with Effect(kind = "external") with Cost(tier = "expensive")
 

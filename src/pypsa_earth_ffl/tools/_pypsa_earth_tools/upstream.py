@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib.util
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -61,19 +62,46 @@ def require_repo() -> Path:
     return root
 
 
+def _from_file(name: str, path: Path) -> Any:
+    """Import ``name`` from an exact file, and pin it in sys.modules.
+
+    Loading by NAME is not good enough here. Their scripts do
+    ``from _helpers import …``, which resolves through sys.path — and sys.path[0]
+    is the directory of whatever script is running, which beats anything this
+    module appends. A stale ``_helpers.py`` left lying in a working directory
+    therefore silently replaces the checkout's, and the failure surfaces as a
+    missing dependency of the WRONG file (observed: a months-old copy demanding
+    `atlite`, which the current one does not import at all).
+
+    Loading from the file and pinning the result under its own name makes the
+    answer independent of where the process happens to have been started.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:  # pragma: no cover - unreadable file
+        raise UpstreamMissing(f"cannot load {name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 @lru_cache(maxsize=1)
 def _prepare_path() -> Path:
-    """Put the checkout's scripts dir on sys.path exactly once.
+    """Put the checkout's scripts dir on sys.path and pin its `_helpers`.
 
     Cached because repeated insertion would grow sys.path on every task on a
     long-lived runner, and because import side effects should happen once.
     """
     root = require_repo()
-    scripts = str(root / "scripts")
-    if scripts not in sys.path:
-        # Appended, not prepended: their `_helpers` must not shadow anything the
-        # runner already imported.
-        sys.path.append(scripts)
+    scripts = root / "scripts"
+    if str(scripts) not in sys.path:
+        # Appended, not prepended: their modules must not shadow anything the
+        # runner already imported. The pinning below is what protects the other
+        # direction.
+        sys.path.append(str(scripts))
+    helpers = scripts / "_helpers.py"
+    if helpers.exists():
+        _from_file("_helpers", helpers)
     return root
 
 
@@ -81,11 +109,15 @@ def load(script: str) -> Any:
     """Import one of PyPSA-Earth's scripts as a module.
 
     ``load("clean_osm_data").clean_data(...)`` runs upstream's cleaning, not a
-    copy of it.
+    copy of it — and, thanks to `_from_file`, the copy in the checkout rather
+    than any same-named file nearer the front of sys.path.
     """
-    _prepare_path()
+    root = _prepare_path()
+    path = root / "scripts" / f"{script}.py"
+    if not path.exists():
+        raise UpstreamMissing(f"no such upstream script: {path}")
     try:
-        return __import__(script)
+        return _from_file(script, path)
     except ImportError as exc:  # pragma: no cover - depends on their deps
         raise UpstreamMissing(
             f"could not import PyPSA-Earth's {script}.py: {exc}. Its own "

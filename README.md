@@ -153,6 +153,21 @@ came out, the mainland ones whose borders run off the edge (MX, GT, BZ, PA) did
 not. A missing shape would become an *invented bus* downstream rather than an
 error, so this **refuses** rather than warning, and names what was missing.
 
+The fix is simply a containing extract, demonstrated on the country that failed:
+
+| source extract | asked | assembled | time |
+|---|---|---|---|
+| `central-america` (853 MB) | MX + 8 others | **MX missing** | 36.7s |
+| `north-america/mexico` (598 MB) | MX | **MX** | 21.8s |
+
+Same country, same code; the only variable is whether the extract contains it.
+
+**Use the smallest containing extract, not the biggest.** Filtering *relations*
+is far more expensive than filtering tags, because osmium must pull their
+referenced members: the same query against the 20 GB `north-america` extract was
+still running after **1h35m** and was abandoned in favour of the 598 MB
+country extract above, which answered in 22 seconds.
+
 #### The attributed run this unblocked
 
 With shapes from the local planet and `names_by_shapes=true` — no GADM, no
