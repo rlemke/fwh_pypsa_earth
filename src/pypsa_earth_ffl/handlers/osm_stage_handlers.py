@@ -303,7 +303,8 @@ def handle_download_osm_data(params: dict[str, Any]) -> dict[str, Any]:
     """
     from earth_osm import eo
 
-    dl = upstream.load("download_osm_data")
+    # Same ordering rule as build_shapes: the params-only refusal comes first,
+    # so it works on a host without the upstream checkout.
     countries = params.get("countries") or []
     if isinstance(countries, str):
         # A `foreach` binds one element, so the fan-out passes a bare code.
@@ -314,6 +315,7 @@ def handle_download_osm_data(params: dict[str, Any]) -> dict[str, Any]:
     data_dir = Path(params.get("data_dir") or (out_dir.parent / "osm_data"))
     say = _log(params)
 
+    dl = upstream.load("download_osm_data")
     country_list = dl.country_list_to_geofk(countries)
     say(f"earth_osm: {len(country_list)} region(s) x {len(FEATURES)} feature(s)")
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -74,11 +74,15 @@ def country_shapes_from_osm(
     src = Path(pbf_path)
     if not src.exists():
         raise LocalShapesError(f"no such PBF: {src}")
-    if not shutil.which(osmium_bin):
-        raise LocalShapesError(f"osmium not found ({osmium_bin})")
+    # ⚠️ Params before TOOLS. "no countries requested" is true whether or not
+    # osmium is installed, and it is the actionable message; checking the binary
+    # first meant a caller with an empty country list was told to install a tool
+    # that would not have helped. Surfaced by CI, which has no osmium.
     wanted = {c.strip().upper() for c in countries if c.strip()}
     if not wanted:
         raise LocalShapesError("no countries requested")
+    if not shutil.which(osmium_bin):
+        raise LocalShapesError(f"osmium not found ({osmium_bin})")
 
     staging = Path(tempfile.mkdtemp(prefix="pe-shapes-"))
     try:
