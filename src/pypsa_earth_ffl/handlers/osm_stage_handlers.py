@@ -104,11 +104,31 @@ def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
     """
     import geopandas as gpd
 
-    mod = upstream.load("build_shapes")
-    cfg = _config()
-    opts = cfg["build_shape_options"]
-    crs = cfg["crs"]
+    # ⚠️ Validate the PARAMETERS before touching upstream. `_config()` reads
+    # config.default.yaml out of the PyPSA-Earth checkout, so loading it first
+    # meant a bad call on a host without that checkout reported "PyPSA-Earth
+    # checkout not found" instead of the actual mistake — and the refusal this
+    # module's tests describe as "pure and always run" could not run at all.
+    # A parameter error is true regardless of what is installed, so it is the
+    # more useful thing to say. Found by CI, where no checkout exists.
     say = _log(params)
+
+    _up: dict = {}
+
+    def up() -> dict:
+        """Load upstream on FIRST USE, not on entry.
+
+        Every refusal above and below is pure — it depends only on params — and
+        this module's tests describe them as "pure and always run". Loading
+        upstream eagerly made that false: `_config()` reads config.default.yaml
+        out of the PyPSA-Earth checkout, so on a host without one, every bad
+        call reported "checkout not found" instead of the actual mistake.
+        """
+        if not _up:
+            c = _config()
+            _up.update(mod=upstream.load("build_shapes"), cfg=c,
+                       opts=c["build_shape_options"], crs=c["crs"])
+        return _up
 
     countries_list = params.get("countries") or []
     if isinstance(countries_list, str):
@@ -173,7 +193,7 @@ def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
         p_offshore = out_dir / "offshore_shapes.geojson"
         p_offshore.write_text('{"type": "FeatureCollection", "features": []}')
         extended = gpd.GeoDataFrame(
-            geometry=[mod.country_cover(country_shapes, None)], crs=country_shapes.crs
+            geometry=[up()["mod"].country_cover(country_shapes, None)], crs=country_shapes.crs
         )
         p_extended = out_dir / "extended_country_shape.geojson"
         extended.reset_index().to_file(p_extended)
@@ -190,28 +210,29 @@ def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
         }
 
     say(f"build_shapes for {countries_list} (GADM download; gadm_shapes skipped)")
-    country_shapes = mod.countries(
+    _u = up()
+    country_shapes = _u["mod"].countries(
         countries_list,
-        crs["geo_crs"],
-        opts["contended_flag"],
-        opts["update_file"],
-        opts["out_logging"],
-        tolerance=opts["simplify_tolerance"],
+        _u["crs"]["geo_crs"],
+        _u["opts"]["contended_flag"],
+        _u["opts"]["update_file"],
+        _u["opts"]["out_logging"],
+        tolerance=up()["opts"]["simplify_tolerance"],
     )
     p_country = out_dir / "country_shapes.geojson"
     country_shapes.to_file(p_country)
 
     p_offshore = out_dir / "offshore_shapes.geojson"
     if eez_gpkg:
-        offshore = mod.eez(
+        offshore = up()["mod"].eez(
             countries_list,
-            crs["geo_crs"],
+            up()["crs"]["geo_crs"],
             country_shapes,
             eez_gpkg,
-            out_logging=opts["out_logging"],
-            tolerance=opts["simplify_tolerance"],
-            minarea=opts["minarea"],
-            simplify_gadm=opts["simplify_gadm"],
+            out_logging=up()["opts"]["out_logging"],
+            tolerance=up()["opts"]["simplify_tolerance"],
+            minarea=up()["opts"]["minarea"],
+            simplify_gadm=up()["opts"]["simplify_gadm"],
         )
         offshore.reset_index().to_file(p_offshore)
         offshore_geom = offshore.geometry
@@ -226,7 +247,7 @@ def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
         offshore_n = 0
 
     extended = gpd.GeoDataFrame(
-        geometry=[mod.country_cover(country_shapes, offshore_geom)],
+        geometry=[up()["mod"].country_cover(country_shapes, offshore_geom)],
         crs=country_shapes.crs,
     )
     p_extended = out_dir / "extended_country_shape.geojson"
@@ -235,16 +256,16 @@ def handle_build_shapes(params: dict[str, Any]) -> dict[str, Any]:
     gadm_path = ""
     if params.get("include_gadm"):
         say("gadm(): downloading WorldPop rasters — this is the expensive path")
-        gadm_shapes = mod.gadm(
-            opts["worldpop_method"], opts["gdp_method"], countries_list,
-            crs["geo_crs"], opts["contended_flag"], int(params.get("mem_mb", 3000)),
-            opts["gadm_layer_id"], opts["update_file"], opts["out_logging"],
-            opts["year"], nprocesses=opts["nprocesses"],
-            simplify_gadm=opts["simplify_gadm"], tolerance=opts["simplify_tolerance"],
-            minarea=opts["minarea"],
+        gadm_shapes = up()["mod"].gadm(
+            up()["opts"]["worldpop_method"], up()["opts"]["gdp_method"], countries_list,
+            up()["crs"]["geo_crs"], up()["opts"]["contended_flag"], int(params.get("mem_mb", 3000)),
+            up()["opts"]["gadm_layer_id"], up()["opts"]["update_file"], up()["opts"]["out_logging"],
+            up()["opts"]["year"], nprocesses=up()["opts"]["nprocesses"],
+            simplify_gadm=up()["opts"]["simplify_gadm"], tolerance=up()["opts"]["simplify_tolerance"],
+            minarea=up()["opts"]["minarea"],
         )
         gadm_path = str(out_dir / "gadm_shapes.geojson")
-        mod.save_to_geojson(gadm_shapes, gadm_path)
+        up()["mod"].save_to_geojson(gadm_shapes, gadm_path)
 
     say(f"country_shapes={len(country_shapes)} offshore={offshore_n}")
     return {
