@@ -127,7 +127,7 @@ Two dependencies are worth knowing before planning a parity run:
   carries no offshore buffer, and `clean_data` filters lines against it.)
 - **GADM is unreachable from this network.** `countries()` fetches
   `https://geodata.ucdavis.edu/gadm/gadm4.1/gpkg/gadm41_LUX.gpkg`; the host
-  answers ICMP (128.120.146.30) but **port 443 times out**, the same way
+  answers ICMP but **port 443 times out**, the same way
   Geofabrik is blocked for this fleet. So the facet is written, its imports
   resolve and its refusals are tested, but `countries()` has **not** been run to
   completion here. That is a network fact, not a code one, and it is why a
